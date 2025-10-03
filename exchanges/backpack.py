@@ -30,8 +30,14 @@ class BackpackWebSocketManager:
         self.order_update_callback = order_update_callback
         self.websocket = None
         self.running = False
+        self.reconnecting = False
         self.ws_url = "wss://ws.backpack.exchange"
         self.logger = None
+
+        # 重连相关参数
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay = 5  # 初始重连延迟(秒)
+        self.max_reconnect_delay = 60  # 最大重连延迟(秒)
 
         # Initialize ED25519 private key from base64 decoded secret
         self.private_key = ed25519.Ed25519PrivateKey.from_private_bytes(
@@ -51,12 +57,17 @@ class BackpackWebSocketManager:
 
     async def connect(self):
         """Connect to Backpack WebSocket."""
-        while True:
+        reconnect_attempts = 0
+        
+        while not self.running and reconnect_attempts < self.max_reconnect_attempts:
             try:
-                self.logger.log(f"Connecting to Backpack WebSocket", "INFO")
+                if self.reconnecting and self.logger:
+                    self.logger.log(f"Attempting to reconnect to Backpack WebSocket (attempt {reconnect_attempts + 1}/{self.max_reconnect_attempts})", "INFO")
+                
                 self.websocket = await websockets.connect(self.ws_url)
                 self.running = True
-
+                self.reconnecting = False
+                
                 # Subscribe to order updates for the specific symbol
                 timestamp = int(time.time() * 1000)
                 signature = self._generate_signature("subscribe", timestamp)
@@ -78,10 +89,30 @@ class BackpackWebSocketManager:
 
                 # Start listening for messages
                 await self._listen()
-
+                
+                # 如果正常退出_listen，重置重连尝试次数
+                reconnect_attempts = 0
+                
             except Exception as e:
+                self.running = False
                 if self.logger:
                     self.logger.log(f"WebSocket connection error: {e}", "ERROR")
+                
+                # 增加重连尝试次数
+                reconnect_attempts += 1
+                
+                if reconnect_attempts >= self.max_reconnect_attempts:
+                    if self.logger:
+                        self.logger.log(f"Max reconnection attempts reached. Giving up.", "ERROR")
+                    break
+                
+                # 指数退避延迟重连
+                delay = min(self.reconnect_delay * (2 ** (reconnect_attempts - 1)), self.max_reconnect_delay)
+                if self.logger:
+                    self.logger.log(f"Waiting {delay} seconds before reconnecting...", "INFO")
+                await asyncio.sleep(delay)
+                
+                self.reconnecting = True
 
     async def _listen(self):
         """Listen for WebSocket messages."""
@@ -101,11 +132,26 @@ class BackpackWebSocketManager:
                         self.logger.log(f"Error handling WebSocket message: {e}", "ERROR")
 
         except websockets.exceptions.ConnectionClosed:
+            self.running = False
             if self.logger:
                 self.logger.log("WebSocket connection closed", "WARNING")
+            # 触发重连机制
+            if not self.reconnecting:
+                self.reconnecting = True
+                await self.connect()
         except Exception as e:
+            self.running = False
             if self.logger:
                 self.logger.log(f"WebSocket listen error: {e}", "ERROR")
+            # 触发重连机制
+            if not self.reconnecting:
+                self.reconnecting = True
+                await self.connect()
+        finally:
+            # 即使正常退出也检查是否需要重连
+            if self.running and not self.reconnecting:
+                self.reconnecting = True
+                await self.connect()
 
     async def _handle_message(self, data: Dict[str, Any]):
         """Handle incoming WebSocket messages."""
@@ -116,7 +162,8 @@ class BackpackWebSocketManager:
             if 'orderUpdate' in stream:
                 await self._handle_order_update(payload)
             else:
-                self.logger.log(f"Unknown WebSocket message: {data}", "ERROR")
+                if self.logger:
+                    self.logger.log(f"Unknown WebSocket message: {data}", "ERROR")
 
         except Exception as e:
             if self.logger:
@@ -135,6 +182,7 @@ class BackpackWebSocketManager:
     async def disconnect(self):
         """Disconnect from WebSocket."""
         self.running = False
+        self.reconnecting = False
         if self.websocket:
             await self.websocket.close()
             if self.logger:
@@ -171,6 +219,7 @@ class BackpackClient(BaseExchangeClient):
         )
 
         self._order_update_handler = None
+        self.ws_manager = None
 
     def _validate_config(self) -> None:
         """Validate Backpack configuration."""
@@ -207,7 +256,7 @@ class BackpackClient(BaseExchangeClient):
     async def disconnect(self) -> None:
         """Disconnect from Backpack."""
         try:
-            if hasattr(self, 'ws_manager') and self.ws_manager:
+            if self.ws_manager:
                 await self.ws_manager.disconnect()
         except Exception as e:
             self.logger.log(f"Error during Backpack disconnect: {e}", "ERROR")

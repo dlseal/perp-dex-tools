@@ -512,6 +512,14 @@ class TradingBot:
 
             # Main trading loop
             while not self.shutdown_requested:
+                # 检查交易所连接状态（如果支持的话）
+                if hasattr(self.exchange_client, 'is_connected'):
+                    if not await self.exchange_client.is_connected():
+                        self.logger.log("Exchange WebSocket connection lost, waiting for reconnect...", "WARNING")
+                        # 等待一小段时间让重连机制工作
+                        await asyncio.sleep(5)
+                        continue
+
                 # Update active orders
                 active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
 

@@ -1,6 +1,4 @@
-"""
-GRVT exchange client implementation.
-"""
+# 在 exchanges/grvt.py 中修改 GrvtClient 类
 
 import os
 import asyncio
@@ -51,6 +49,14 @@ class GrvtClient(BaseExchangeClient):
         self._order_update_handler = None
         self._ws_client = None
         self._order_update_callback = None
+        
+        # 添加连接管理属性
+        self._ws_connected = False
+        self._ws_connecting = False
+        self._reconnect_task = None
+        self._max_reconnect_attempts = 5
+        self._reconnect_delay = 5
+        self._max_reconnect_delay = 60
 
     def _initialize_grvt_clients(self) -> None:
         """Initialize the GRVT REST and WebSocket clients."""
@@ -80,6 +86,11 @@ class GrvtClient(BaseExchangeClient):
 
     async def connect(self) -> None:
         """Connect to GRVT WebSocket."""
+        if self._ws_connecting:
+            self.logger.log("Already connecting to GRVT WebSocket", "INFO")
+            return
+            
+        self._ws_connecting = True
         try:
             # Initialize WebSocket client - match the working test implementation
             loop = asyncio.get_running_loop()
@@ -104,6 +115,8 @@ class GrvtClient(BaseExchangeClient):
 
             # Initialize and connect
             await self._ws_client.initialize()
+            self._ws_connected = True
+            self._ws_connecting = False
             await asyncio.sleep(2)  # Wait for connection to establish
 
             # If an order update callback was set before connect, subscribe now
@@ -112,16 +125,73 @@ class GrvtClient(BaseExchangeClient):
                 self.logger.log(f"Deferred subscription started for {self.config.contract_id}", "INFO")
 
         except Exception as e:
+            self._ws_connected = False
+            self._ws_connecting = False
             self.logger.log(f"Error connecting to GRVT WebSocket: {e}", "ERROR")
+            # 启动重连任务
+            if not self._reconnect_task or self._reconnect_task.done():
+                self._reconnect_task = asyncio.create_task(self._reconnect())
             raise
+
+    async def _reconnect(self) -> None:
+        """Handle WebSocket reconnection with exponential backoff."""
+        reconnect_attempts = 0
+        
+        while reconnect_attempts < self._max_reconnect_attempts:
+            try:
+                reconnect_attempts += 1
+                self.logger.log(f"Attempting to reconnect to GRVT WebSocket (attempt {reconnect_attempts}/{self._max_reconnect_attempts})", "INFO")
+                
+                # 断开现有连接（如果有）
+                if self._ws_client:
+                    try:
+                        await self._ws_client.__aexit__()
+                    except:
+                        pass
+                
+                # 清理状态
+                self._ws_client = None
+                self._ws_connected = False
+                
+                # 尝试重新连接
+                await self.connect()
+                
+                self.logger.log("Successfully reconnected to GRVT WebSocket", "INFO")
+                return  # 成功重连，退出循环
+                
+            except Exception as e:
+                self.logger.log(f"Reconnection attempt {reconnect_attempts} failed: {e}", "ERROR")
+                
+                if reconnect_attempts >= self._max_reconnect_attempts:
+                    self.logger.log(f"Max reconnection attempts reached. Giving up.", "ERROR")
+                    break
+                
+                # 指数退避延迟
+                delay = min(self._reconnect_delay * (2 ** (reconnect_attempts - 1)), self._max_reconnect_delay)
+                self.logger.log(f"Waiting {delay} seconds before next reconnection attempt...", "INFO")
+                await asyncio.sleep(delay)
+        
+        # 如果所有重连尝试都失败了
+        self.logger.log("Unable to reconnect to GRVT WebSocket after maximum attempts", "ERROR")
 
     async def disconnect(self) -> None:
         """Disconnect from GRVT."""
         try:
+            # 取消重连任务
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
+                try:
+                    await self._reconnect_task
+                except asyncio.CancelledError:
+                    pass
+                    
             if self._ws_client:
                 await self._ws_client.__aexit__()
         except Exception as e:
             self.logger.log(f"Error during GRVT disconnect: {e}", "ERROR")
+        finally:
+            self._ws_connected = False
+            self._ws_connecting = False
 
     def get_exchange_name(self) -> str:
         """Get the exchange name."""
@@ -534,3 +604,7 @@ class GrvtClient(BaseExchangeClient):
                 return self.config.contract_id, self.config.tick_size
 
         raise ValueError(f"Contract not found for ticker: {ticker}")
+
+    async def is_connected(self) -> bool:
+        """Check if WebSocket is connected."""
+        return self._ws_connected
