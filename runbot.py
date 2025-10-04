@@ -50,6 +50,11 @@ def parse_arguments():
     parser.add_argument('--boost', action='store_true',
                         help='Use the Boost mode for volume boosting')
 
+    parser.add_argument('--volume-mode', action='store_true',
+                        help='Enable volume mode for trading with small losses to earn rewards')
+    parser.add_argument('--volume-range', type=str, default=None,
+                        help='Volume mode profit range, e.g., "-0.01,0.004" for [-0.01%, 0.004%]')
+
     return parser.parse_args()
 
 
@@ -116,7 +121,9 @@ async def main():
         grid_step=Decimal(args.grid_step),
         stop_price=Decimal(args.stop_price),
         pause_price=Decimal(args.pause_price),
-        boost_mode=args.boost
+        boost_mode=args.boost,
+        volume_mode=args.volume_mode,  # 新增参数
+        volume_range=volume_range 
     )
 
     # Create and run the bot

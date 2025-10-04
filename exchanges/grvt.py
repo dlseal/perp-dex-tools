@@ -422,59 +422,86 @@ class GrvtClient(BaseExchangeClient):
                 raise Exception(f"[OPEN] Unexpected order status: {order_status}")
 
     async def place_close_order(self, contract_id: str, quantity: Decimal, price: Decimal, side: str) -> OrderResult:
-        """Place a close order with GRVT."""
-        # Get current market prices
-        attempt = 0
-        active_close_orders = await self._get_active_close_orders(contract_id)
-        while True:
-            attempt += 1
-            if attempt % 5 == 0:
-                self.logger.log(f"[CLOSE] Attempt {attempt} to place order", "INFO")
-                current_close_orders = await self._get_active_close_orders(contract_id)
+        """Place a close order with Backpack using official SDK with retry logic for POST_ONLY rejections."""
+        max_retries = 15
+        retry_count = 0
 
-                if current_close_orders - active_close_orders > 1:
-                    self.logger.log(f"[CLOSE] ERROR: Active close orders abnormal: "
-                                    f"{active_close_orders}, {current_close_orders}", "ERROR")
-                    raise Exception(f"[CLOSE] ERROR: Active close orders abnormal: "
-                                    f"{active_close_orders}, {current_close_orders}")
-                else:
-                    active_close_orders = current_close_orders
-
-            # Adjust price to ensure maker order
+        while retry_count < max_retries:
+            retry_count += 1
+            # Get current market prices to adjust order price if needed
             best_bid, best_ask = await self.fetch_bbo_prices(contract_id)
 
-            if side == 'sell' and price <= best_bid:
-                adjusted_price = best_bid + self.config.tick_size
-            elif side == 'buy' and price >= best_ask:
-                adjusted_price = best_ask - self.config.tick_size
-            else:
-                adjusted_price = price
+            if best_bid <= 0 or best_ask <= 0:
+                return OrderResult(success=False, error_message='No bid/ask data available')
+
+            # Adjust order price based on market conditions and side
+            adjusted_price = price
+            if side.lower() == 'sell':
+                order_side = 'Ask'
+                # For sell orders, ensure price is above best bid to be a maker order
+                if price <= best_bid:
+                    adjusted_price = best_bid + self.config.tick_size
+            elif side.lower() == 'buy':
+                order_side = 'Bid'
+                # For buy orders, ensure price is below best ask to be a maker order
+                if price >= best_ask:
+                    adjusted_price = best_ask - self.config.tick_size
+
+            # 刷量模式下调整价格允许小幅亏损
+            if hasattr(self.config, 'volume_mode') and self.config.volume_mode and self.config.volume_range:
+                # 在指定范围内随机选择利润百分比
+                import random
+                profit_pct = Decimal(str(random.uniform(float(self.config.volume_range[0]), float(self.config.volume_range[1]))))
+                
+                # 根据利润范围调整价格
+                if side.lower() == 'sell':
+                    # 卖出平仓，根据利润范围调整价格
+                    target_price = price * (1 + profit_pct/100)
+                    # 确保价格不会太偏离市场价导致无法成交
+                    adjusted_price = min(adjusted_price, target_price)
+                elif side.lower() == 'buy':
+                    # 买入平仓，根据利润范围调整价格
+                    target_price = price * (1 - profit_pct/100)
+                    # 确保价格不会太偏离市场价导致无法成交
+                    adjusted_price = max(adjusted_price, target_price)
 
             adjusted_price = self.round_to_tick(adjusted_price)
-            try:
-                order_info = await self.place_post_only_order(contract_id, quantity, adjusted_price, side)
-            except Exception as e:
-                self.logger.log(f"[CLOSE] Error placing order: {e}", "ERROR")
+            # Place the order using Backpack SDK (post-only to avoid taker fees)
+            order_result = self.account_client.execute_order(
+                symbol=contract_id,
+                side=order_side,
+                order_type=OrderTypeEnum.LIMIT,
+                quantity=str(quantity),
+                price=str(adjusted_price),
+                post_only=True,
+                time_in_force=TimeInForceEnum.GTC
+            )
+
+            if not order_result:
+                return OrderResult(success=False, error_message='Failed to place order')
+
+            if 'code' in order_result:
+                message = order_result.get('message', 'Unknown error')
+                self.logger.log(f"[CLOSE] Error placing order: {message}", "ERROR")
                 continue
 
-            order_status = order_info.status
-            order_id = order_info.order_id
+            # Extract order ID from response
+            order_id = order_result.get('id')
+            if not order_id:
+                self.logger.log(f"[CLOSE] No order ID in response: {order_result}", "ERROR")
+                return OrderResult(success=False, error_message='No order ID in response')
 
-            if order_status == 'REJECTED':
-                continue
-            if order_status in ['OPEN', 'FILLED']:
-                return OrderResult(
-                    success=True,
-                    order_id=order_id,
-                    side=side,
-                    size=quantity,
-                    price=adjusted_price,
-                    status=order_status
-                )
-            elif order_status == 'PENDING':
-                raise Exception("[CLOSE] Order not processed after 10 seconds")
-            else:
-                raise Exception(f"[CLOSE] Unexpected order status: {order_status}")
+            # Order successfully placed
+            return OrderResult(
+                success=True,
+                order_id=order_id,
+                side=side.lower(),
+                size=quantity,
+                price=adjusted_price,
+                status='New'
+            )
+
+        return OrderResult(success=False, error_message='Max retries exceeded for close order')
 
     async def cancel_order(self, order_id: str) -> OrderResult:
         """Cancel an order with GRVT."""

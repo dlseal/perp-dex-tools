@@ -32,6 +32,8 @@ class TradingConfig:
     stop_price: Decimal
     pause_price: Decimal
     boost_mode: bool
+    volume_mode: bool = False           # 启用刷量模式
+    volume_range=[-0.01, 0.004]
 
     @property
     def close_order_side(self) -> str:
@@ -235,10 +237,23 @@ class TradingBot:
                 self.last_open_order_time = time.time()
                 # Place close order
                 close_side = self.config.close_order_side
-                if close_side == 'sell':
-                    close_price = filled_price * (1 + self.config.take_profit/100)
+                
+                # 根据刷量模式决定平仓价格
+                if self.config.volume_mode and self.config.volume_range:
+                    # 在刷量模式下，从指定范围内随机选择利润百分比
+                    import random
+                    profit_pct = Decimal(str(random.uniform(float(self.config.volume_range[0]), float(self.config.volume_range[1]))))
+                    
+                    if close_side == 'sell':
+                        close_price = filled_price * (1 + profit_pct/100)
+                    else:
+                        close_price = filled_price * (1 - profit_pct/100)
                 else:
-                    close_price = filled_price * (1 - self.config.take_profit/100)
+                    # 正常模式下保持原有逻辑
+                    if close_side == 'sell':
+                        close_price = filled_price * (1 + self.config.take_profit/100)
+                    else:
+                        close_price = filled_price * (1 - self.config.take_profit/100)
 
                 close_order_result = await self.exchange_client.place_close_order(
                     self.config.contract_id,
@@ -332,10 +347,22 @@ class TradingBot:
                         close_side
                     )
                 else:
-                    if close_side == 'sell':
-                        close_price = filled_price * (1 + self.config.take_profit/100)
+                    # 根据刷量模式决定平仓价格
+                    if self.config.volume_mode and self.config.volume_range:
+                        # 在刷量模式下，从指定范围内随机选择利润百分比
+                        import random
+                        profit_pct = Decimal(str(random.uniform(float(self.config.volume_range[0]), float(self.config.volume_range[1]))))
+                        
+                        if close_side == 'sell':
+                            close_price = filled_price * (1 + profit_pct/100)
+                        else:
+                            close_price = filled_price * (1 - profit_pct/100)
                     else:
-                        close_price = filled_price * (1 - self.config.take_profit/100)
+                        # 正常模式下保持原有逻辑
+                        if close_side == 'sell':
+                            close_price = filled_price * (1 + self.config.take_profit/100)
+                        else:
+                            close_price = filled_price * (1 - self.config.take_profit/100)
 
                     close_order_result = await self.exchange_client.place_close_order(
                         self.config.contract_id,
