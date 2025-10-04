@@ -3,7 +3,7 @@
 import os
 import asyncio
 import time
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Any, List, Optional, Tuple
 from pysdk.grvt_ccxt import GrvtCcxt
 from pysdk.grvt_ccxt_ws import GrvtCcxtWS
@@ -467,14 +467,12 @@ class GrvtClient(BaseExchangeClient):
 
             adjusted_price = self.round_to_tick(adjusted_price)
             # Place the order using Backpack SDK (post-only to avoid taker fees)
-            order_result = self.account_client.execute_order(
+            order_result = self.rest_client.create_limit_order(
                 symbol=contract_id,
                 side=order_side,
-                order_type=OrderTypeEnum.LIMIT,
-                quantity=str(quantity),
+                amount=str(quantity),
                 price=str(adjusted_price),
-                post_only=True,
-                time_in_force=TimeInForceEnum.GTC
+                params={'post_only': True}
             )
 
             if not order_result:
@@ -502,6 +500,14 @@ class GrvtClient(BaseExchangeClient):
             )
 
         return OrderResult(success=False, error_message='Max retries exceeded for close order')
+
+    def round_to_tick(self, price: Decimal) -> Decimal:
+        """Round price to nearest tick size."""
+        if not self.config.tick_size:
+            return price
+        
+        tick_decimal = Decimal(str(self.config.tick_size))
+        return (price / tick_decimal).quantize(Decimal('1'), rounding=ROUND_DOWN) * tick_decimal    
 
     async def cancel_order(self, order_id: str) -> OrderResult:
         """Cancel an order with GRVT."""

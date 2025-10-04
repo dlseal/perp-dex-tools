@@ -6,7 +6,7 @@ import os
 import time
 import asyncio
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional
 
@@ -33,7 +33,7 @@ class TradingConfig:
     pause_price: Decimal
     boost_mode: bool
     volume_mode: bool = False           # 启用刷量模式
-    volume_range=[-0.01, 0.004]
+    volume_range: list = field(default_factory=lambda: [-0.01, 0.004])
 
     @property
     def close_order_side(self) -> str:

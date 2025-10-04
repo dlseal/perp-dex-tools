@@ -107,6 +107,15 @@ async def main():
         sys.exit(1)
     dotenv.load_dotenv(args.env_file)
 
+    volume_range = None
+    if args.volume_range:
+        try:
+            range_values = args.volume_range.split(',')
+            volume_range = [float(range_values[0]), float(range_values[1])]
+        except (ValueError, IndexError):
+            print(f"Error: Invalid volume_range format. Expected '-0.01,0.004', got '{args.volume_range}'")
+            sys.exit(1)
+
     # Create configuration
     config = TradingConfig(
         ticker=args.ticker.upper(),
