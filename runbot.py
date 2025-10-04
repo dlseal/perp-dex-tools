@@ -53,7 +53,7 @@ def parse_arguments():
     parser.add_argument('--volume-mode', action='store_true',
                         help='Enable volume mode for trading with small losses to earn rewards')
     parser.add_argument('--volume-range', type=str, default=None,
-                        help='Volume mode profit range, e.g., "-0.01,0.004" for [-0.01%, 0.004%]')
+                    help='Volume mode profit range, e.g., "-0.01,0.004" for [-0.01%, 0.004%]')
 
     return parser.parse_args()
 
