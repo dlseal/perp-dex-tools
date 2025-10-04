@@ -123,7 +123,7 @@ async def main():
         pause_price=Decimal(args.pause_price),
         boost_mode=args.boost,
         volume_mode=args.volume_mode,  # 新增参数
-        volume_range=volume_range 
+        volume_range=volume_range
     )
 
     # Create and run the bot
